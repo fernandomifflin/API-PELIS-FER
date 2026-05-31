@@ -1,9 +1,65 @@
 // Importar las librerías que vamos a necesitar
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const sequelize = require('./database');
-const Pelicula = require('./models/Pelicula');
+const { Sequelize, DataTypes } = require('sequelize');
 const logger = require('./middleware/logger');
+
+// ============================================
+// CONFIGURACIÓN DE LA BASE DE DATOS
+// ============================================
+let sequelize;
+
+const databaseUrl = process.env.DATABASE_URL;
+
+if (databaseUrl) {
+    sequelize = new Sequelize(databaseUrl, {
+        dialect: 'postgres',
+        protocol: 'postgres',
+        dialectOptions: {
+            ssl: {
+                require: true,
+                rejectUnauthorized: false
+            }
+        },
+        logging: false
+    });
+    console.log('Conectando a PostgreSQL en la nube, apá');
+} else {
+    sequelize = new Sequelize({
+        dialect: 'sqlite',
+        storage: './peliculas.sqlite',
+        logging: false
+    });
+    console.log('Conectando a SQLite local');
+}
+
+// ============================================
+// DEFINIR EL MODELO DE PELICULA
+// ============================================
+const Pelicula = sequelize.define('Pelicula', {
+    titulo: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    director: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    anio: {
+        type: DataTypes.INTEGER,
+        allowNull: false
+    },
+    genero: {
+        type: DataTypes.STRING,
+        allowNull: false
+    },
+    puntuacion: {
+        type: DataTypes.INTEGER,
+        defaultValue: 0
+    }
+}, {
+    tableName: 'peliculas'
+});
 
 // Crear la aplicación de express y definir el puerto
 const app = express();
@@ -75,18 +131,13 @@ app.post('/login', (req, res) => {
 // ============================================
 // FUNCIÓN PARA INICIALIZAR LA BASE DE DATOS
 // ============================================
-// Esta función se encarga de crear las tablas si no existen
-// y también inserta 42 películas de ejemplo la primera vez que se ejecuta
 async function iniciarBaseDeDatos() {
     try {
-        // sync() crea las tablas en la base de datos si no existen
         await sequelize.sync();
         console.log('Base de datos sincronizada');
 
-        // Verificar cuántas películas ya existen en la base de datos
         const cantidad = await Pelicula.count();
         
-        // Si no hay ninguna película, insertamos los datos de ejemplo
         if (cantidad === 0) {
             await Pelicula.bulkCreate([
                 { titulo: 'El Padrino', director: 'Francis Ford Coppola', anio: 1972, genero: 'Drama', puntuacion: 9 },
@@ -136,7 +187,6 @@ async function iniciarBaseDeDatos() {
                 { titulo: 'No Country for Old Men', director: 'Joel y Ethan Coen', anio: 2007, genero: 'Crimen', puntuacion: 9 },
                 { titulo: 'Drive', director: 'Nicolas Winding Refn', anio: 2011, genero: 'Drama', puntuacion: 8 },
                 { titulo: 'Memories of Murder', director: 'Bong Joon-ho', anio: 2003, genero: 'Suspenso', puntuacion: 9 }
-                
             ]);
             console.log('Peliculas insertadas correctamente');
         } else {
@@ -150,12 +200,8 @@ async function iniciarBaseDeDatos() {
 // ============================================
 // RUTA 1: OBTENER TODAS LAS PELICULAS EN FORMATO JSON
 // ============================================
-// Esta ruta se usa para que el frontend o Postman puedan consultar
-// todas las películas de la base de datos. Devuelve un JSON con éxito,
-// la cantidad total y el arreglo de películas.
 app.get('/peliculas', async (req, res, next) => {
     try {
-        // findAll() trae todos los registros de la tabla peliculas
         const todasLasPeliculas = await Pelicula.findAll();
         res.json({
             exito: true,
@@ -163,7 +209,31 @@ app.get('/peliculas', async (req, res, next) => {
             datos: todasLasPeliculas
         });
     } catch (error) {
-        // Si hay error, lo pasamos al middleware de errores
+        next(error);
+    }
+});
+
+// ============================================
+// RUTA 1.5: OBTENER UNA PELICULA POR ID (NUEVO)
+// ============================================
+app.get('/peliculas/:id', async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        
+        const pelicula = await Pelicula.findByPk(id);
+        
+        if (!pelicula) {
+            return res.status(404).json({
+                exito: false,
+                mensaje: `No existe la pelicula con ID ${id}, compa`
+            });
+        }
+        
+        res.json({
+            exito: true,
+            datos: pelicula
+        });
+    } catch (error) {
         next(error);
     }
 });
@@ -171,15 +241,10 @@ app.get('/peliculas', async (req, res, next) => {
 // ============================================
 // RUTA 2: CREAR UNA NUEVA PELICULA (POST)
 // ============================================
-// Esta ruta recibe los datos de una nueva película desde Postman
-// y la guarda en la base de datos. Sequelize se encarga de asignar
-// un ID automáticamente.
 app.post('/peliculas', verificarToken, async (req, res, next) => {
     try {
-        // Extraer los datos del cuerpo de la petición
         const { titulo, director, anio, genero, puntuacion } = req.body;
 
-        // Validar que los campos obligatorios no falten
         if (!titulo || !director || !anio || !genero) {
             return res.status(400).json({
                 exito: false,
@@ -187,7 +252,6 @@ app.post('/peliculas', verificarToken, async (req, res, next) => {
             });
         }
 
-        // create() crea y guarda la película en la base de datos
         const nuevaPelicula = await Pelicula.create({
             titulo,
             director,
@@ -196,7 +260,6 @@ app.post('/peliculas', verificarToken, async (req, res, next) => {
             puntuacion: puntuacion !== undefined ? puntuacion : 0
         });
 
-        // Código 201 significa "creado exitosamente"
         res.status(201).json({
             exito: true,
             mensaje: 'Pelicula agregada exitosamente, apá',
@@ -210,19 +273,13 @@ app.post('/peliculas', verificarToken, async (req, res, next) => {
 // ============================================
 // RUTA 3: ACTUALIZAR UNA PELICULA POR SU ID (PUT)
 // ============================================
-// Esta ruta recibe un ID en la URL y los campos a actualizar en el body.
-// Busca la película por su ID y si existe, la actualiza.
 app.put('/peliculas/:id', verificarToken, async (req, res, next) => {
     try {
-        // Obtener el ID de los parámetros de la URL
         const { id } = req.params;
-        // Obtener los campos a actualizar del body
         const { titulo, director, anio, genero, puntuacion } = req.body;
 
-        // Buscar la película por su clave primaria (ID)
         const pelicula = await Pelicula.findByPk(id);
 
-        // Si no existe, devolver error 404
         if (!pelicula) {
             return res.status(404).json({
                 exito: false,
@@ -230,8 +287,6 @@ app.put('/peliculas/:id', verificarToken, async (req, res, next) => {
             });
         }
 
-        // Actualizar solo los campos que vienen en la petición
-        // Si un campo no viene, se mantiene el valor original
         await pelicula.update({
             titulo: titulo !== undefined ? titulo : pelicula.titulo,
             director: director !== undefined ? director : pelicula.director,
@@ -253,16 +308,12 @@ app.put('/peliculas/:id', verificarToken, async (req, res, next) => {
 // ============================================
 // RUTA 4: ELIMINAR UNA PELICULA POR SU ID (DELETE)
 // ============================================
-// Esta ruta recibe un ID en la URL, busca la película y la elimina
-// de la base de datos permanentemente.
 app.delete('/peliculas/:id', verificarToken, async (req, res, next) => {
     try {
         const { id } = req.params;
 
-        // Buscar la película por su ID
         const pelicula = await Pelicula.findByPk(id);
 
-        // Si no existe, devolver error 404
         if (!pelicula) {
             return res.status(404).json({
                 exito: false,
@@ -270,7 +321,6 @@ app.delete('/peliculas/:id', verificarToken, async (req, res, next) => {
             });
         }
 
-        // destroy() elimina el registro de la base de datos
         await pelicula.destroy();
 
         res.json({
@@ -285,15 +335,10 @@ app.delete('/peliculas/:id', verificarToken, async (req, res, next) => {
 // ============================================
 // RUTA 5: MOSTRAR TABLA HTML CON TODAS LAS PELICULAS
 // ============================================
-// Esta ruta genera una página HTML con una tabla bonita que muestra
-// todas las películas. Las puntuaciones tienen colores:
-// verde para 9-10, naranja para 7-8, rojo para menos de 7.
 app.get('/ver-tabla', async (req, res, next) => {
     try {
-        // Obtener todas las películas de la base de datos
         const peliculas = await Pelicula.findAll();
         
-        // Empiezo a construir el HTML
         let html = `
             <!DOCTYPE html>
             <html>
@@ -455,9 +500,7 @@ app.get('/ver-tabla', async (req, res, next) => {
                             <tbody>
         `;
         
-        // Recorrer cada película y agregar una fila a la tabla
         for (const p of peliculas) {
-            // Determinar la clase CSS según la puntuación
             let puntuacionClass = 'puntuacion-badge';
             if (p.puntuacion >= 9) {
                 puntuacionClass = 'puntuacion-badge puntuacion-alta';
@@ -500,8 +543,6 @@ app.get('/ver-tabla', async (req, res, next) => {
 // ============================================
 // RUTA 6: PAGINA PRINCIPAL (INICIO)
 // ============================================
-// Esta es la página de inicio que se ve cuando entras a http://localhost:3000
-// Muestra las dos opciones principales: ver el JSON de la API o ver la tabla.
 app.get('/', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -509,7 +550,6 @@ app.get('/', (req, res) => {
         <head>
             <title>API de Peliculas</title>
             <style>
-                /* Estilos para la página de inicio */
                 * {
                     margin: 0;
                     padding: 0;
@@ -663,7 +703,7 @@ app.get('/', (req, res) => {
                                     <div class="stat-label">Total Peliculas</div>
                                 </div>
                                 <div class="stat">
-                                    <div class="stat-number">SQLite</div>
+                                    <div class="stat-number">PostgreSQL</div>
                                     <div class="stat-label">Base de Datos</div>
                                 </div>
                                 <div class="stat">
@@ -675,13 +715,12 @@ app.get('/', (req, res) => {
                     </div>
                     
                     <div class="footer">
-                        <p>Desarrollado con Express.js, Sequelize y SQLite | JWT Authentication</p>
+                        <p>Desarrollado con Express.js, Sequelize y PostgreSQL | JWT Authentication</p>
                     </div>
                 </div>
             </div>
             
             <script>
-                // Este script carga el total de películas desde la API
                 fetch('/peliculas')
                     .then(response => response.json())
                     .then(data => {
@@ -696,8 +735,6 @@ app.get('/', (req, res) => {
 // ============================================
 // MIDDLEWARE PARA MANEJAR ERRORES
 // ============================================
-// Si alguna ruta o proceso genera un error, este middleware lo captura
-// y devuelve una respuesta JSON con el mensaje de error.
 app.use((err, req, res, next) => {
     console.error('Error:', err.stack);
     res.status(500).json({
@@ -710,17 +747,18 @@ app.use((err, req, res, next) => {
 // ============================================
 // INICIAR EL SERVIDOR
 // ============================================
-// Primero inicializamos la base de datos y luego arrancamos el servidor
 async function iniciarServidor() {
     await iniciarBaseDeDatos();
     
     app.listen(PORT, () => {
         console.log('Servidor corriendo bien mashin en http://localhost:' + PORT);
         console.log('API JSON: http://localhost:' + PORT + '/peliculas');
+        console.log('API por ID: http://localhost:' + PORT + '/peliculas/:id');
         console.log('Ver tabla: http://localhost:' + PORT + '/ver-tabla');
         console.log('');
         console.log('Metodos disponibles:');
         console.log('  GET    /peliculas        - Obtener todas la pelis');
+        console.log('  GET    /peliculas/:id    - Obtener una peli por ID (NUEVO)');
         console.log('  POST   /peliculas        - Agregar una nueva, maifrend (requiere token)');
         console.log('  PUT    /peliculas/:id    - Actualizar una (requiere token)');
         console.log('  DELETE /peliculas/:id    - Eliminar una que esté gacha (requiere token)');
@@ -729,5 +767,4 @@ async function iniciarServidor() {
     });
 }
 
-// Ejecutar la función que inicia todo
 iniciarServidor();
